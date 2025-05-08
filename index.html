@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Talk With Stranger</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+
+<body class="bg-gradient-to-br from-purple-400 to-blue-500 h-screen flex flex-col items-center justify-center">
+
+    <h1 class="text-4xl font-bold text-white mb-6">Talk With Stranger</h1>
+
+    <div class="mb-4">
+        <label class="block text-white text-lg mb-2" for="mood">How do you feel?</label>
+        <select id="mood" class="p-2 rounded-md">
+            <option>Happy</option>
+            <option>Sad</option>
+            <option>Excited</option>
+            <option>Lonely</option>
+            <option>Just Want To Talk</option>
+        </select>
+    </div>
+    <div id="callContainer" class="hidden mt-6">
+        <h2 class="text-white text-xl mb-4">Call with Stranger</h2>
+        <button id="startCall" class="bg-blue-500 text-white px-6 py-2 rounded-full">Start Call</button>
+        <button id="endCall" class="bg-red-500 text-white px-6 py-2 rounded-full hidden">End Call</button>
+
+        <div id="remoteStream" class="hidden mt-4">
+            <video id="remoteVideo" class="w-full h-64" autoplay></video>
+        </div>
+
+        <div id="localStream" class="hidden mt-4">
+            <video id="localVideo" class="w-full h-64" autoplay muted></video>
+        </div>
+    </div>
+
+    <button id="findStrangerBtn" class="bg-white text-purple-600 px-6 py-2 rounded-full font-bold hover:bg-purple-100">
+        Find a Stranger
+    </button>
+
+    <p id="status" class="text-white mt-6"></p>
+
+    <!-- Load Supabase v1 -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@1.35.6/dist/umd/supabase.min.js"></script>
+
+    <script>
+        // Initialize Supabase
+        const supabaseUrl = 'https://nevunhoetcgydhmswvqf.supabase.co';
+        const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5ldnVuaG9ldGNneWRobXN3dnFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NjQzMTksImV4cCI6MjA2MTQ0MDMxOX0.QEFJTjg5c8JJI1_w4we3DUFWlmrDTLFyRjwXDTE-wU4';
+        const supabaseClient = window.supabase.createClient(supabaseUrl, supabaseKey);
+
+        // Store the current user's ID
+        let currentUserId = null;
+        let matchedUserId = null;
+        let callRoomId = null;
+        let signalingSubscription = null;
+
+        // Event listener for "Find Stranger"
+        document.getElementById('findStrangerBtn').addEventListener('click', async () => {
+            const mood = document.getElementById('mood').value;
+            document.getElementById('status').textContent = `Looking for someone who feels "${mood}"...`;
+
+            try {
+                // Insert user into "users" table
+                const { data, error } = await supabaseClient
+                    .from('users')
+                    .insert([
+                        { mood: mood, status: 'waiting' }
+                    ])
+                    .select();
+
+                if (error) throw error;
+                
+                if (data && data.length > 0) {
+                    currentUserId = data[0].id;
+                    // Start the matchmaking logic after inserting the user
+                    matchUser(currentUserId, mood);
+                }
+            } catch (error) {
+                document.getElementById('status').textContent = 'Error finding a stranger!';
+                console.error('Error:', error);
+            }
+        });
+
+        // Matchmaking function
+        async function matchUser(userId, mood) {
+            try {
+                // Find users with the same mood who are waiting
+                const { data: waitingUsers, error } = await supabaseClient
+                    .from('users')
+                    .select('*')
+                    .eq('mood', mood)
+                    .eq('status', 'waiting')
+                    .neq('id', userId)
+                    .limit(1);
+
+                if (error) throw error;
+
+                if (waitingUsers && waitingUsers.length > 0) {
+                    const stranger = waitingUsers[0];
+                    matchedUserId = stranger.id;
+                    
+                    // Update both users' status to 'matched'
+                    await supabaseClient
+                        .from('users')
+                        .update({ status: 'matched', matched_with: matchedUserId })
+                        .eq('id', userId);
+                        
+                    await supabaseClient
+                        .from('users')
+                        .update({ status: 'matched', matched_with: userId })
+                        .eq('id', matchedUserId);
+                    
+                    document.getElementById('status').textContent = `You are now matched with a stranger who feels ${stranger.mood}!`;
+                    
+                    // Create a call room
+                    const { data: room, error: roomError } = await supabaseClient
+                        .from('call_rooms')
+                        .insert([{ 
+                            user1_id: userId,
+                            user2_id: matchedUserId,
+                            status: 'waiting'
+                        }])
+                        .select();
+                        
+                    if (roomError) throw roomError;
+                    
+                    if (room && room.length > 0) {
+                        callRoomId = room[0].id;
+                        // Show the call container
+                        document.getElementById('callContainer').classList.remove('hidden');
+                    }
+                } else {
+                    document.getElementById('status').textContent = 'Waiting for a match...';
+                    // Check again after a delay
+                    setTimeout(() => checkForMatch(userId, mood), 5000);
+                }
+            } catch (error) {
+                console.error('Matching error:', error);
+                document.getElementById('status').textContent = 'Error during matching!';
+            }
+        }
+
+        // Check if someone matched with this user
+        async function checkForMatch(userId, mood) {
+            try {
+                const { data, error } = await supabaseClient
+                    .from('users')
+                    .select('*')
+                    .eq('id', userId)
+                    .single();
+                
+                if (error) throw error;
+                
+                if (data && data.status === 'matched') {
+                    matchedUserId = data.matched_with;
+                    document.getElementById('status').textContent = `Someone matched with you!`;
+                    document.getElementById('callContainer').classList.remove('hidden');
+                    
+                    // Get the call room
+                    const { data: room, error: roomError } = await supabaseClient
+                        .from('call_rooms')
+                        .select('*')
+                        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+                        .eq('status', 'waiting')
+                        .single();
+                        
+                    if (roomError) throw roomError;
+                    
+                    if (room) {
+                        callRoomId = room.id;
+                    }
+                } else {
+                    // Still waiting, check again after a delay
+                    matchUser(userId, mood);
+                }
+            } catch (error) {
+                console.error('Check match error:', error);
+            }
+        }
+
+        // WebRTC Setup
+        let localStream;
+        let peerConnection;
+        let remoteStream;
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const configuration = { 
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+        const pendingCandidates = [];
+
+        // Start call button event
+        document.getElementById('startCall').addEventListener('click', async () => {
+            try {
+                await startCall();
+                document.getElementById('startCall').classList.add('hidden');
+                document.getElementById('endCall').classList.remove('hidden');
+                document.getElementById('localStream').classList.remove('hidden');
+            } catch (error) {
+                console.error('Start call error:', error);
+                document.getElementById('status').textContent = 'Error starting call!';
+            }
+        });
+
+        // When the user starts a call
+        async function startCall() {
+            try {
+                // Get local media
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+                
+                // Create RTCPeerConnection
+                peerConnection = new RTCPeerConnection(configuration);
+                
+                // Add local stream to peer connection
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                
+                // Handle ICE candidates
+                peerConnection.onicecandidate = async ({ candidate }) => {
+                    if (candidate) {
+                        await sendSignalingMessage({
+                            type: 'ice-candidate',
+                            candidate: candidate,
+                            sender: currentUserId,
+                            receiver: matchedUserId
+                        });
+                    }
+                };
+                
+                // Handle remote stream
+                peerConnection.ontrack = (event) => {
+                    remoteStream = event.streams[0];
+                    remoteVideo.srcObject = remoteStream;
+                    document.getElementById('remoteStream').classList.remove('hidden');
+                };
+                
+                // Create and send offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                await sendSignalingMessage({
+                    type: 'offer',
+                    offer: offer,
+                    sender: currentUserId,
+                    receiver: matchedUserId
+                });
+                
+                // Update room status
+                await supabaseClient
+                    .from('call_rooms')
+                    .update({ status: 'connected' })
+                    .eq('id', callRoomId);
+                    
+                document.getElementById('status').textContent = 'Call started! Waiting for other person to join...';
+                
+                // Set up signaling channel
+                setupSignalingChannel();
+            } catch (error) {
+                console.error('Error in startCall:', error);
+                throw error;
+            }
+        }
+
+        // End the call
+        document.getElementById('endCall').addEventListener('click', async () => {
+            try {
+                if (peerConnection) {
+                    peerConnection.close();
+                }
+                
+                if (localStream) {
+                    localStream.getTracks().forEach(track => track.stop());
+                }
+                
+                // Clean up subscription
+                if (signalingSubscription) {
+                    supabaseClient.removeSubscription(signalingSubscription);
+                }
+                
+                // Update user and room status
+                await supabaseClient
+                    .from('users')
+                    .update({ status: 'ended' })
+                    .eq('id', currentUserId);
+                    
+                await supabaseClient
+                    .from('call_rooms')
+                    .update({ status: 'ended' })
+                    .eq('id', callRoomId);
+                
+                // Reset UI
+                document.getElementById('callContainer').classList.add('hidden');
+                document.getElementById('localStream').classList.add('hidden');
+                document.getElementById('remoteStream').classList.add('hidden');
+                document.getElementById('startCall').classList.remove('hidden');
+                document.getElementById('endCall').classList.add('hidden');
+                document.getElementById('status').textContent = 'Call ended.';
+                
+            } catch (error) {
+                console.error('End call error:', error);
+            }
+        });
+
+        // Send signaling message through Supabase
+        async function sendSignalingMessage(message) {
+            try {
+                await supabaseClient
+                    .from('signaling')
+                    .insert([{
+                        room_id: callRoomId,
+                        message: message,
+                        sender_id: currentUserId,
+                        receiver_id: matchedUserId
+                    }]);
+            } catch (error) {
+                console.error('Error sending signal:', error);
+            }
+        }
+
+        // Set up signaling channel using Supabase v1 realtime
+        function setupSignalingChannel() {
+            // Subscribe to signaling messages
+            signalingSubscription = supabaseClient
+                .from(`signaling:receiver_id=eq.${currentUserId}`)
+                .on('INSERT', payload => {
+                    // Process new signaling messages
+                    if (payload.new && payload.new.room_id === callRoomId) {
+                        handleSignalingMessage(payload.new.message);
+                    }
+                })
+                .subscribe();
+        }
+
+        // Handle incoming signaling messages
+        async function handleSignalingMessage(message) {
+            try {
+                if (!peerConnection) {
+                    // Create peer connection if not exists
+                    peerConnection = new RTCPeerConnection(configuration);
+                    
+                    // Setup local stream if not already done
+                    if (!localStream) {
+                        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                        localVideo.srcObject = localStream;
+                        document.getElementById('localStream').classList.remove('hidden');
+                        
+                        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                    }
+                    
+                    // Handle ICE candidates
+                    peerConnection.onicecandidate = async ({ candidate }) => {
+                        if (candidate) {
+                            await sendSignalingMessage({
+                                type: 'ice-candidate',
+                                candidate: candidate,
+                                sender: currentUserId,
+                                receiver: matchedUserId
+                            });
+                        }
+                    };
+                    
+                    // Handle remote stream
+                    peerConnection.ontrack = (event) => {
+                        remoteStream = event.streams[0];
+                        remoteVideo.srcObject = remoteStream;
+                        document.getElementById('remoteStream').classList.remove('hidden');
+                    };
+                }
+
+                if (message.type === 'offer') {
+                    // Handle incoming offer
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+                    
+                    // Create and send answer
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    
+                    await sendSignalingMessage({
+                        type: 'answer',
+                        answer: answer,
+                        sender: currentUserId,
+                        receiver: message.sender
+                    });
+                    
+                    document.getElementById('status').textContent = 'Connected to call!';
+                    
+                } else if (message.type === 'answer') {
+                    // Handle incoming answer
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+                    document.getElementById('status').textContent = 'Connected to call!';
+                    
+                } else if (message.type === 'ice-candidate') {
+                    // Add ICE candidate
+                    if (peerConnection.remoteDescription) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                    } else {
+                        // Queue candidate if remote description not set yet
+                        pendingCandidates.push(message.candidate);
+                    }
+                }
+            } catch (error) {
+                console.error('Error handling signal:', error);
+            }
+        }
+    </script>
+
+</body>
+
+</html>

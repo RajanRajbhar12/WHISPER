@@ -322,15 +322,8 @@ export default function TalkPage() {
 
       // Create RTCPeerConnection
       // Update your peer connection configuration to:
-     const configuration: RTCConfiguration = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    {
-      urls: "turn:your.turn.server:3478",
-      username: "user",
-      credential: "pass",
-    },
-  ],
+   const configuration: RTCConfiguration = {
+  iceServers: [...],
   iceTransportPolicy: "all" as RTCIceTransportPolicy,
 }
 
